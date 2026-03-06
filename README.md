@@ -1,4 +1,4 @@
-# Meteora DLMM Indexing Explorer
+# Meteora DLMM Indexer
 
 Solana DLMM data platform prototype:
 
