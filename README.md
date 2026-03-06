@@ -1,4 +1,4 @@
-# Dune Project
+# Meteora DLMM Indexing Explorer
 
 Solana DLMM data platform prototype:
 
@@ -77,6 +77,8 @@ graph TB
     API -->|HTTP/CSV| EXT
 ```
 
+
+
 ### Bronze / Silver / Gold Data Model
 
 ```mermaid
@@ -123,6 +125,8 @@ graph TB
     SR -->|derive metrics| GQ
 ```
 
+
+
 ## Repository Layout
 
 - `indexer/` : ingestion worker, parser, batch writer, ClickHouse ingest
@@ -148,42 +152,7 @@ Create:
 - `indexer/.env`
 - `api/.env`
 
-### `indexer/.env` (required)
-
-```bash
-YELLOWSTONE_ENDPOINT=
-YELLOWSTONE_TOKEN=
-YELLOWSTONE_RECONNECT_MS=2000
-YELLOWSTONE_SUBSCRIBE_MODE=transactions
-PARSER_METRICS_EVERY=500
-
-CLICKHOUSE_URL=http://127.0.0.1:8123
-CLICKHOUSE_DATABASE=dune_project
-CLICKHOUSE_USER=dune_project
-CLICKHOUSE_PASSWORD=dune_project_pass
-CLICKHOUSE_TIMEOUT_MS=8000
-CLICKHOUSE_RECONNECT_SECS=5
-CLICKHOUSE_DROP_LOG_SECS=30
-CLICKHOUSE_MAX_BUFFER_RECORDS=50000
-
-DB_BATCH_SIZE=500
-DB_BATCH_FLUSH_MS=1000
-DB_BATCH_QUEUE_SIZE=20000
-DB_QUEUE_MODE=block
-```
-
-### `api/.env` (required)
-
-```bash
-API_HOST=127.0.0.1
-API_PORT=8080
-
-CLICKHOUSE_URL=http://127.0.0.1:8123
-CLICKHOUSE_DATABASE=dune_project
-CLICKHOUSE_USER=dune_project
-CLICKHOUSE_PASSWORD=dune_project_pass
-CLICKHOUSE_TIMEOUT_MS=8000
-```
+check out .env.example to setup the .env files
 
 ## Quick Start
 
@@ -296,3 +265,4 @@ make down
 - `docs/DATA_MODEL.md`
 - `docs/API_CONTRACT.md`
 - `docs/OPERATIONS.md`
+
