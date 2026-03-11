@@ -41,11 +41,11 @@ graph TB
     end
 
     subgraph Backend
-        API[actix-web]
-        WS[ws/dashboard]
+        API[actix-web API]
+        WS[ws dashboard]
     end
 
-    FE[Dashboard (React/Vite)]
+    FE[Dashboard - React/Vite]
 
     YS --> P --> BW
     BW --> CH
