@@ -1,6 +1,4 @@
 # Dune Project
-![Frontend Screenshot](images/frontend.png)
-![TUI Screenshot](images/tui.png)
 
 Solana-focused data platform prototype for Meteora DLMM:
 
@@ -11,7 +9,15 @@ Solana-focused data platform prototype for Meteora DLMM:
 - Rust backend (`actix-web`) for query + CSV + websocket snapshots
 - React/Vite dashboard for live protocol + pool views
 
+## Screenshots
 
+Dashboard (backend snapshots + pool explorer + live analytics):
+
+![Dashboard Screenshot](images/frontend.png)
+
+Indexer TUI (parse/ingestion quality surface in terminal):
+
+![Indexer TUI Screenshot](images/tui.png)
 
 ## What It Does
 
@@ -41,7 +47,7 @@ graph TB
     end
 
     subgraph Backend
-        API[actix-web API]
+        API[actix-web Backend]
         WS[ws dashboard]
     end
 
@@ -56,14 +62,14 @@ graph TB
     API --> FE
 ```
 
-## Repo Layout
+## Repository Layout
 
 - `indexer/` Rust ingestion + parser + TUI
 - `backend/` Rust query/websocket server
 - `dashboard/` React/Vite frontend
 - `schema/` ClickHouse schema source of truth (`clickhouse_v2.sql`)
 - `scripts/` local dev/run/reset/demo/smoke helpers
-- `docs/` architecture, data model, API contract, ops runbook
+- `images/` README screenshots
 
 ## Prerequisites
 
@@ -79,34 +85,33 @@ Create and fill:
 - `indexer/.env`
 - `backend/.env`
 
-Use examples:
+Use:
 
 - `indexer/.env.example`
 - `backend/.env.example`
 
-## Local Commands
+## Local Run
 
-From `dune_project/`:
+From project root:
 
 ```bash
-make up          # start clickhouse + redis
-make schema      # apply schema
-make reset-db    # drop/recreate DB + reapply schema
+make up
+make schema
 ```
 
-Run backend + dashboard:
+Terminal 1 (backend + dashboard):
 
 ```bash
 make app
 ```
 
-Run indexer with TUI (recommended in its own terminal):
+Terminal 2 (indexer TUI):
 
 ```bash
 make indexer
 ```
 
-Run all in one terminal/process group:
+Optional all-in-one command:
 
 ```bash
 make dev
@@ -117,12 +122,12 @@ Notes:
 - `make dev` runs indexer in background/silent mode (`INDEXER_TUI=0`, `INDEXER_PLAIN_LOGS=0`).
 - Use `make indexer` for interactive TUI.
 
-## URLs
+## Local URLs
 
 - Dashboard: `http://127.0.0.1:5174`
 - Backend: `http://127.0.0.1:8080`
 
-## High-Value Endpoints
+## Key Endpoints
 
 System:
 
@@ -150,7 +155,7 @@ Export:
 
 - `GET /v1/export/events.csv?limit=1000`
 
-## Demo / Smoke
+## Validation
 
 ```bash
 make smoke
