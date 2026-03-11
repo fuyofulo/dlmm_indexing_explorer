@@ -21,7 +21,7 @@ pub async fn v1_export_events_csv(
     if let Err(resp) = validate_slot_range(&state, query.from_slot, query.to_slot) {
         return resp;
     }
-    let silver_table = state.clickhouse.table_ref("silver_dlmm_events");
+    let events_table = state.clickhouse.table_ref("dlmm_events");
 
     let mut sql = format!(
         "SELECT
@@ -43,7 +43,7 @@ pub async fn v1_export_events_csv(
             parse_error,
             parse_warning,
             event_id
-        FROM {silver_table}
+        FROM {events_table}
         WHERE 1"
     );
 

@@ -1,7 +1,8 @@
+mod analytics;
 mod export;
 mod pools;
 mod quality;
-mod swaps;
+mod stream;
 mod system;
 
 use actix_web::{HttpResponse, web};
@@ -10,10 +11,11 @@ use crate::errors::bad_request;
 use crate::models::{AppState, EventCursor};
 use crate::utils::{encode_cursor, sql_quote};
 
+pub use analytics::v1_analytics_dashboard;
 pub use export::v1_export_events_csv;
-pub use pools::{v1_pool_events, v1_pool_summary, v1_pools_top};
+pub use pools::{v1_pool_events, v1_pool_explorer, v1_pools_top};
 pub use quality::{v1_quality_latest, v1_quality_window};
-pub use swaps::v1_swaps;
+pub use stream::ws_dashboard;
 pub use system::{health, healthz, metrics, v1_ingestion_lag};
 
 fn decode_optional_cursor(

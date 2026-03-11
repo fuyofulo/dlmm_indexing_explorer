@@ -1,4 +1,4 @@
-.PHONY: up down schema run-indexer run-api dashboard-install dashboard-dev dashboard-build demo smoke check test fmt clippy load
+.PHONY: up down schema reset-db dev app indexer run-backend dashboard-install dashboard-dev dashboard-build demo smoke check test fmt clippy
 
 up:
 	docker compose -f docker-compose.clickhouse.yml up -d
@@ -7,15 +7,22 @@ down:
 	docker compose -f docker-compose.clickhouse.yml down
 
 schema:
-	docker exec -i dune-project-clickhouse clickhouse-client \
-		--user dune_project --password dune_project_pass --multiquery \
-		< schema/clickhouse_v2.sql
+	./scripts/schema_apply.sh
 
-run-indexer:
+reset-db:
+	./scripts/db_reset.sh
+
+dev:
+	./scripts/dev.sh
+
+indexer:
 	cargo run -p indexer
 
-run-api:
-	cargo run -p dune-project-api
+run-backend:
+	cargo run -p dune-project-backend
+
+app:
+	./scripts/app.sh
 
 dashboard-install:
 	cd dashboard && npm install
@@ -25,6 +32,12 @@ dashboard-dev:
 
 dashboard-build:
 	cd dashboard && npm run build
+
+demo:
+	./scripts/demo.sh
+
+smoke:
+	./scripts/smoke.sh
 
 fmt:
 	cargo fmt --all

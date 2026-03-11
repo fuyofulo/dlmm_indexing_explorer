@@ -17,13 +17,11 @@ pub(super) struct UpdateParseResult {
     pub(super) parsed_instructions: u64,
     pub(super) failed_instructions: u64,
     pub(super) dlmm_instruction_count: u64,
-    pub(super) dlmm_discriminators: Vec<Vec<u8>>,
 }
 
 #[derive(Debug, Serialize)]
-pub struct ParsedUpdate {
+pub(crate) struct ParsedUpdate {
     pub(super) update_type: &'static str,
-    pub(super) filters: Vec<String>,
     pub(super) created_at: Option<String>,
     pub(super) slot: Option<u64>,
     pub(super) signature: Option<String>,
@@ -31,44 +29,43 @@ pub struct ParsedUpdate {
     pub(super) parsed_instructions: u64,
     pub(super) failed_instructions: u64,
     pub(super) dlmm_instruction_count: u64,
-    pub(super) dlmm_discriminators: Vec<Vec<u8>>,
     pub(super) payload: Value,
 }
 
 impl ParsedUpdate {
-    pub fn update_type(&self) -> &str {
+    pub(crate) fn update_type(&self) -> &str {
         self.update_type
     }
 
-    pub fn created_at(&self) -> Option<&str> {
+    pub(crate) fn created_at(&self) -> Option<&str> {
         self.created_at.as_deref()
     }
 
-    pub fn slot(&self) -> Option<u64> {
+    pub(crate) fn slot(&self) -> Option<u64> {
         self.slot
     }
 
-    pub fn signature(&self) -> Option<&str> {
+    pub(crate) fn signature(&self) -> Option<&str> {
         self.signature.as_deref()
     }
 
-    pub fn parsed_ok(&self) -> bool {
+    pub(crate) fn parsed_ok(&self) -> bool {
         self.parsed_ok
     }
 
-    pub fn parsed_instructions(&self) -> u64 {
+    pub(crate) fn parsed_instructions(&self) -> u64 {
         self.parsed_instructions
     }
 
-    pub fn failed_instructions(&self) -> u64 {
+    pub(crate) fn failed_instructions(&self) -> u64 {
         self.failed_instructions
     }
 
-    pub fn dlmm_instruction_count(&self) -> u64 {
+    pub(crate) fn dlmm_instruction_count(&self) -> u64 {
         self.dlmm_instruction_count
     }
 
-    pub fn payload(&self) -> &Value {
+    pub(crate) fn payload(&self) -> &Value {
         &self.payload
     }
 }

@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let token = token.trim().to_string();
         if token.is_empty() { None } else { Some(token) }
     };
-    let clickhouse_url = std::env::var("CLICKHOUSE_URL").unwrap();
+    let _clickhouse_url = std::env::var("CLICKHOUSE_URL").unwrap();
     let clickhouse_database = std::env::var("CLICKHOUSE_DATABASE").unwrap();
     let batch_size = std::env::var("DB_BATCH_SIZE")
         .unwrap()
@@ -40,24 +40,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap()
         .parse::<usize>()
         .unwrap();
-    let db_queue_mode = std::env::var("DB_QUEUE_MODE").unwrap().to_ascii_lowercase();
-
-    println!("Starting Yellowstone ingestor...");
-    println!("   Endpoint: {}", yellowstone_endpoint);
-    println!(
-        "   Token: {}",
-        if yellowstone_token.is_some() {
-            "Set"
-        } else {
-            "Not set"
-        }
-    );
-    println!("   ClickHouse URL: {}", clickhouse_url);
-    println!("   ClickHouse database: {}", clickhouse_database);
-    println!("   DB batch size: {}", batch_size);
-    println!("   DB batch flush (ms): {}", batch_flush_ms);
-    println!("   DB queue size: {}", batch_queue_size);
-    println!("   DB queue mode: {}", db_queue_mode);
+    let _db_queue_mode = std::env::var("DB_QUEUE_MODE").unwrap().to_ascii_lowercase();
 
     let batch_writer = BatchWriter::new(
         &clickhouse_database,

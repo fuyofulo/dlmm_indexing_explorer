@@ -1,7 +1,9 @@
 mod clickhouse;
 mod errors;
 mod handlers;
+mod live;
 mod models;
+mod rpc;
 mod utils;
 mod validation;
 
@@ -11,31 +13,59 @@ use actix_web::{App, HttpServer, web};
 
 use clickhouse::ClickHouseClient;
 use handlers::{
-    health, healthz, metrics, v1_export_events_csv, v1_ingestion_lag, v1_pool_events,
-    v1_pool_summary, v1_pools_top, v1_quality_latest, v1_quality_window, v1_swaps,
+    health, healthz, metrics, v1_analytics_dashboard, v1_export_events_csv,
+    v1_ingestion_lag, v1_pool_events, v1_pool_explorer,
+    v1_pools_top, v1_quality_latest, v1_quality_window, ws_dashboard,
 };
+use live::start_redis_stream_consumer;
+use rpc::SolanaRpcClient;
 use models::{AppMetrics, AppState};
 use utils::now_unix_ms;
 
+fn load_dotenv_candidates() {
+    let candidates = [
+        ".env",
+        "backend/.env",
+        "dune_project/backend/.env",
+        "indexer/.env",
+        "dune_project/indexer/.env",
+        "../.env",
+        "../backend/.env",
+        "../indexer/.env",
+        "../risk_radar/backend/.env",
+        "../risk_radar/labs/pool_intel/backend/.env",
+    ];
+
+    dotenv::dotenv().ok();
+    for path in candidates {
+        dotenv::from_filename(path).ok();
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    dotenv::dotenv().ok();
-    dotenv::from_filename(".env").ok();
-    dotenv::from_filename("indexer/.env").ok();
-    dotenv::from_filename("../.env").ok();
-    dotenv::from_filename("../indexer/.env").ok();
+    load_dotenv_candidates();
 
-    let host = std::env::var("API_HOST").unwrap();
-    let port = std::env::var("API_PORT").unwrap().parse::<u16>().unwrap();
+    let host = std::env::var("BACKEND_HOST")
+        .expect("BACKEND_HOST is missing; set it in dune_project/backend/.env");
+    let port = std::env::var("BACKEND_PORT")
+        .expect("BACKEND_PORT is missing; set it in dune_project/backend/.env")
+        .parse::<u16>()
+        .expect("BACKEND_PORT must be a valid u16");
     let bind_addr = format!("{}:{}", host, port);
+    let (dashboard_tx, _) = tokio::sync::broadcast::channel::<u64>(1024);
 
     let state = AppState {
         clickhouse: Arc::new(ClickHouseClient::from_env()),
+        rpc: SolanaRpcClient::from_env().map(Arc::new),
         metrics: Arc::new(AppMetrics::default()),
         started_at_ms: now_unix_ms(),
+        dashboard_tx,
     };
 
-    println!("starting dune-project-api on {}", bind_addr);
+    start_redis_stream_consumer(&state);
+
+    println!("starting dune-project-backend on {}", bind_addr);
 
     HttpServer::new(move || {
         App::new()
@@ -43,14 +73,15 @@ async fn main() -> std::io::Result<()> {
             .service(health)
             .service(healthz)
             .service(metrics)
-            .service(v1_swaps)
             .service(v1_pools_top)
             .service(v1_quality_latest)
             .service(v1_quality_window)
             .service(v1_ingestion_lag)
-            .service(v1_pool_summary)
+            .service(v1_pool_explorer)
             .service(v1_pool_events)
             .service(v1_export_events_csv)
+            .service(v1_analytics_dashboard)
+            .service(ws_dashboard)
     })
     .shutdown_timeout(1)
     .bind(bind_addr)?

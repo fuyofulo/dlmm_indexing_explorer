@@ -3,7 +3,7 @@ use serde_json::json;
 
 use crate::errors::bad_request;
 use crate::models::{
-    AppState, PaginatedResponse, PoolEventItem, PoolEventsQuery, PoolSummaryQuery, TopPoolItem,
+    AppState, PaginatedResponse, PoolEventItem, PoolEventsQuery, PoolExplorerQuery, TopPoolItem,
     TopPoolsQuery,
 };
 use crate::utils::{
@@ -11,8 +11,7 @@ use crate::utils::{
     parse_u64, parse_u64_or_zero, sql_quote,
 };
 use crate::validation::{
-    first_row_or_empty, parse_event_filter, query_rows_or_500, validate_slot_range,
-    validated_limit, validated_minutes,
+    parse_event_filter, query_rows_or_500, validate_slot_range, validated_limit, validated_minutes,
 };
 
 use super::{
@@ -34,16 +33,23 @@ pub async fn v1_pools_top(
         Err(resp) => return resp,
     };
 
-    let gold_table = state.clickhouse.table_ref("gold_pool_minute");
+    let events_table = state.clickhouse.table_ref("dlmm_events");
+    let cutoff_ms = now_unix_ms().saturating_sub((minutes as u64) * 60_000);
     let sql = format!(
         "SELECT
-            pool,
-            sum(swap_count) AS swap_count,
-            toString(sum(volume_raw)) AS volume_raw,
-            sum(unique_users) AS unique_users_sum,
-            max(last_ingested_unix_ms) AS last_ingested_unix_ms
-        FROM {gold_table}
-        WHERE minute_bucket >= toInt64(intDiv(toUnixTimestamp(now()), 60) - {minutes})
+            ifNull(pool, '') AS pool,
+            countIf(parsed = 1 AND event_name IN ('swap', 'swap2', 'swap_exact_out2', 'event_cpi::Swap')) AS swap_count,
+            toString(sumIf(ifNull(amount_in_raw, 0), parsed = 1 AND event_name IN ('swap', 'swap2', 'swap_exact_out2', 'event_cpi::Swap'))) AS volume_raw
+        FROM (
+            SELECT
+                ifNull(pool, '') AS pool,
+                parsed,
+                event_name,
+                amount_in_raw
+            FROM {events_table}
+            WHERE ingested_at_ms >= {cutoff_ms}
+              AND ifNull(pool, '') != ''
+        )
         GROUP BY pool
         ORDER BY toUInt128(volume_raw) DESC, swap_count DESC
         LIMIT {limit}"
@@ -60,8 +66,6 @@ pub async fn v1_pools_top(
             pool: parse_string_or_empty(row.get("pool")),
             swap_count: parse_u64_or_zero(row.get("swap_count")),
             volume_raw: parse_string_or(row.get("volume_raw"), "0"),
-            unique_users_sum: parse_u64_or_zero(row.get("unique_users_sum")),
-            last_ingested_unix_ms: parse_u64_or_zero(row.get("last_ingested_unix_ms")),
         })
         .collect::<Vec<_>>();
 
@@ -72,10 +76,10 @@ pub async fn v1_pools_top(
     }))
 }
 
-#[get("/v1/pools/{pool}/summary")]
-pub async fn v1_pool_summary(
+#[get("/v1/pools/{pool}/explorer")]
+pub async fn v1_pool_explorer(
     path: web::Path<String>,
-    query: web::Query<PoolSummaryQuery>,
+    query: web::Query<PoolExplorerQuery>,
     state: web::Data<AppState>,
 ) -> impl Responder {
     state.metrics.inc_request();
@@ -87,94 +91,69 @@ pub async fn v1_pool_summary(
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let hours = (minutes as u64).div_ceil(60);
-    let now_ms = now_unix_ms();
-    let cutoff_ms = now_ms.saturating_sub((minutes as u64) * 60_000);
 
-    let pool_minute_table = state.clickhouse.table_ref("gold_pool_minute");
-    let pool_user_hour_table = state.clickhouse.table_ref("gold_pool_user_hour");
-    let silver_table = state.clickhouse.table_ref("silver_dlmm_events");
-
-    let minute_sql = format!(
-        "SELECT
-            sum(swap_count) AS swap_count,
-            toString(sum(volume_raw)) AS volume_raw,
-            sum(unique_users) AS unique_users_sum,
-            min(min_slot) AS min_slot,
-            max(max_slot) AS max_slot,
-            max(last_ingested_unix_ms) AS last_ingested_unix_ms
-        FROM {pool_minute_table}
-        WHERE pool = {pool}
-          AND minute_bucket >= toInt64(intDiv(toUnixTimestamp(now()), 60) - {minutes})",
-        pool = sql_quote(&pool),
-    );
-
-    let hour_sql = format!(
-        "SELECT
-            countDistinct(user) AS active_users,
-            sum(claim_events) AS claim_events,
-            toString(sum(fee_x_raw)) AS fee_x_raw,
-            toString(sum(fee_y_raw)) AS fee_y_raw
-        FROM {pool_user_hour_table}
-        WHERE pool = {pool}
-          AND hour_bucket >= toInt64(intDiv(toUnixTimestamp(now()), 3600) - {hours})",
-        pool = sql_quote(&pool),
-    );
-
-    let events_sql = format!(
-        "SELECT
-            count() AS events_total,
-            countIf(parsed = 1) AS parsed_events,
-            countIf(notEmpty(ifNull(parse_error, ''))) AS parse_error_events,
-            countIf(notEmpty(ifNull(parse_warning, ''))) AS parse_warning_events
-        FROM {silver_table}
-        WHERE ifNull(pool, '') = {pool}
-          AND ingested_at_ms >= {cutoff_ms}",
-        pool = sql_quote(&pool),
-    );
-
-    let minute_row = match first_row_or_empty(&state, &minute_sql) {
-        Ok(row) => row,
-        Err(resp) => return resp,
-    };
-
-    let hour_row = match first_row_or_empty(&state, &hour_sql) {
-        Ok(row) => row,
-        Err(resp) => return resp,
-    };
-
-    let events_row = match first_row_or_empty(&state, &events_sql) {
-        Ok(row) => row,
-        Err(resp) => return resp,
+    let market = if let Some(rpc) = &state.rpc {
+        match rpc.fetch_pool_snapshot(&pool).await {
+            Ok(snapshot) => json!({
+                "name": format!("{}-{}", snapshot.token_x_symbol, snapshot.token_y_symbol),
+                "pair_label": format!("{}-{}", snapshot.token_x_symbol, snapshot.token_y_symbol),
+                "mint_x": snapshot.token_x_mint,
+                "mint_y": snapshot.token_y_mint,
+                "token_x_symbol": snapshot.token_x_symbol,
+                "token_y_symbol": snapshot.token_y_symbol,
+                "token_x_decimals": snapshot.token_x_decimals,
+                "token_y_decimals": snapshot.token_y_decimals,
+                "current_price": snapshot.current_price_x_per_y,
+                "inverse_price": snapshot.current_price_y_per_x,
+                "dynamic_fee_pct": snapshot.variable_fee_pct,
+                "tvl": null,
+                "reserve_x": snapshot.reserve_x_ui.map(|v| v.to_string()).or(snapshot.reserve_x_raw),
+                "reserve_y": snapshot.reserve_y_ui.map(|v| v.to_string()).or(snapshot.reserve_y_raw),
+                "reserve_x_account": snapshot.reserve_x,
+                "reserve_y_account": snapshot.reserve_y,
+                "active_bin_id": snapshot.active_bin_id,
+                "populated_bin_count": snapshot.populated_bin_count,
+                "protocol_fee_x_raw": snapshot.protocol_fee_x_raw,
+                "protocol_fee_y_raw": snapshot.protocol_fee_y_raw,
+                "bins": snapshot.bins.iter().map(|bin| json!({
+                    "bin_id": bin.bin_id,
+                    "distance_from_active": bin.distance_from_active,
+                    "price_x_per_y": bin.price_x_per_y,
+                    "price_y_per_x": bin.price_y_per_x,
+                    "onchain_price_raw": bin.onchain_price_raw,
+                    "onchain_price_x_per_y": bin.onchain_price_x_per_y,
+                    "onchain_price_y_per_x": bin.onchain_price_y_per_x,
+                    "amount_x_raw": bin.amount_x_raw,
+                    "amount_y_raw": bin.amount_y_raw,
+                    "amount_x_ui": bin.amount_x_ui,
+                    "amount_y_ui": bin.amount_y_ui
+                })).collect::<Vec<_>>(),
+                "pool_config": {
+                    "bin_step": snapshot.bin_step,
+                    "base_fee_pct": snapshot.base_fee_pct,
+                    "max_fee_pct": snapshot.total_fee_pct,
+                    "protocol_fee_pct": snapshot.protocol_fee_pct,
+                    "base_factor": snapshot.base_factor,
+                    "base_fee_power_factor": snapshot.base_fee_power_factor,
+                    "variable_fee_control": snapshot.variable_fee_control,
+                    "volatility_accumulator": snapshot.volatility_accumulator,
+                    "protocol_share_bps": snapshot.protocol_share_bps
+                }
+            }),
+            Err(error) => json!({
+                "error": error.to_string()
+            }),
+        }
+    } else {
+        json!({
+            "error": "backend rpc client is not configured"
+        })
     };
 
     HttpResponse::Ok().json(json!({
         "pool": pool,
         "minutes": minutes,
-        "window": {
-            "from_ingested_at_ms": cutoff_ms,
-            "to_ingested_at_ms": now_ms
-        },
-        "pool_activity": {
-            "swap_count": parse_u64_or_zero(minute_row.get("swap_count")),
-            "volume_raw": parse_string_or(minute_row.get("volume_raw"), "0"),
-            "unique_users_sum": parse_u64_or_zero(minute_row.get("unique_users_sum")),
-            "min_slot": parse_u64_or_zero(minute_row.get("min_slot")),
-            "max_slot": parse_u64_or_zero(minute_row.get("max_slot")),
-            "last_ingested_unix_ms": parse_u64_or_zero(minute_row.get("last_ingested_unix_ms")),
-        },
-        "user_activity": {
-            "active_users": parse_u64_or_zero(hour_row.get("active_users")),
-            "claim_events": parse_u64_or_zero(hour_row.get("claim_events")),
-            "fee_x_raw": parse_string_or(hour_row.get("fee_x_raw"), "0"),
-            "fee_y_raw": parse_string_or(hour_row.get("fee_y_raw"), "0"),
-        },
-        "parse_health": {
-            "events_total": parse_u64_or_zero(events_row.get("events_total")),
-            "parsed_events": parse_u64_or_zero(events_row.get("parsed_events")),
-            "parse_error_events": parse_u64_or_zero(events_row.get("parse_error_events")),
-            "parse_warning_events": parse_u64_or_zero(events_row.get("parse_warning_events")),
-        }
+        "market": market,
     }))
 }
 
@@ -201,7 +180,7 @@ pub async fn v1_pool_events(
         Err(resp) => return resp,
     };
 
-    let silver_table = state.clickhouse.table_ref("silver_dlmm_events");
+    let events_table = state.clickhouse.table_ref("dlmm_events");
     let mut sql = format!(
         "SELECT
             slot,
@@ -220,7 +199,7 @@ pub async fn v1_pool_events(
             ifNull(toString(fee_y_raw), '') AS fee_y_raw,
             parse_error,
             parse_warning
-        FROM {silver_table}
+        FROM {events_table}
         WHERE ifNull(pool, '') = {}",
         sql_quote(&pool)
     );

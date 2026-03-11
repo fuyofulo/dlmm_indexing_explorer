@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::io::IsTerminal;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -6,11 +7,13 @@ use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use yellowstone_grpc_proto::prelude::SubscribeUpdate;
 
+use self::tui::{IndexerTui, TuiSnapshot};
 use crate::parser::{ParsedUpdate, Parser};
 use crate::storage::{BatchError, BatchWriter, DbInstructionRecord, DbRecord};
 
-pub mod client;
-pub mod subscriptions;
+mod client;
+mod subscriptions;
+mod tui;
 
 #[derive(Debug, Clone)]
 struct ParsedDiscriminatorStat {
@@ -75,6 +78,32 @@ impl RuntimeMetrics {
             db_dropped: 0,
             db_disconnected: 0,
         }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct RuntimeReport {
+    updates_per_sec: f64,
+    dlmm_updates_per_sec: f64,
+    parsed_instr_per_sec: f64,
+    failed_instr_per_sec: f64,
+    avg_updates_per_sec: f64,
+}
+
+#[derive(Debug, Default)]
+struct TuiHistory {
+    updates_rate: VecDeque<u64>,
+    dlmm_rate: VecDeque<u64>,
+    parsed_rate: VecDeque<u64>,
+    failed_rate: VecDeque<u64>,
+}
+
+impl TuiHistory {
+    fn push(&mut self, report: &RuntimeReport) {
+        push_rate_sample(&mut self.updates_rate, report.updates_per_sec);
+        push_rate_sample(&mut self.dlmm_rate, report.dlmm_updates_per_sec);
+        push_rate_sample(&mut self.parsed_rate, report.parsed_instr_per_sec);
+        push_rate_sample(&mut self.failed_rate, report.failed_instr_per_sec);
     }
 }
 
@@ -218,14 +247,18 @@ impl ParseStats {
     }
 }
 
-pub struct YellowstoneWorker {
+pub(crate) struct YellowstoneWorker {
     endpoint: String,
     x_token: Option<String>,
     batch_writer: BatchWriter,
 }
 
 impl YellowstoneWorker {
-    pub fn new(endpoint: String, x_token: Option<String>, batch_writer: BatchWriter) -> Self {
+    pub(crate) fn new(
+        endpoint: String,
+        x_token: Option<String>,
+        batch_writer: BatchWriter,
+    ) -> Self {
         Self {
             endpoint,
             x_token,
@@ -233,7 +266,7 @@ impl YellowstoneWorker {
         }
     }
 
-    pub async fn run(self) {
+    pub(crate) async fn run(self) {
         let endpoint = self.endpoint.clone();
         let x_token = self.x_token.clone();
         let parser = match Parser::new() {
@@ -252,14 +285,44 @@ impl YellowstoneWorker {
             .unwrap()
             .parse::<u64>()
             .unwrap();
-        println!("Yellowstone Worker started!");
-        println!("Reconnect backoff (ms): {}", reconnect_ms);
+        let plain_logs_enabled =
+            std::env::var("INDEXER_PLAIN_LOGS").unwrap_or_else(|_| "0".to_string()) != "0";
+        let tty_available = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+        let tui_enabled = std::env::var("INDEXER_TUI").unwrap_or_else(|_| "1".to_string()) != "0";
+        let mut tui = if tui_enabled && tty_available {
+            match IndexerTui::new() {
+                Ok(view) => Some(view),
+                Err(err) => {
+                    eprintln!("Failed to initialize TUI: {}", err);
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if plain_logs_enabled {
+            println!("Yellowstone Worker started!");
+            println!("Reconnect backoff (ms): {}", reconnect_ms);
+        }
 
         let mut parse_stats = ParseStats::default();
         let mut runtime_metrics = RuntimeMetrics::new();
+        let mut tui_history = TuiHistory::default();
+
+        if let Some(view) = tui.as_mut() {
+            let _ = view.draw(&TuiSnapshot {
+                connection_state: "booting".to_string(),
+                endpoint: endpoint.clone(),
+                reconnect_ms,
+                ..TuiSnapshot::default()
+            });
+        }
 
         loop {
-            println!("Connecting to {}...", endpoint);
+            if plain_logs_enabled {
+                println!("Connecting to {}...", endpoint);
+            }
 
             let mut client = match client::connect(&endpoint, x_token.clone()).await {
                 Ok(c) => c,
@@ -270,7 +333,9 @@ impl YellowstoneWorker {
                 }
             };
 
-            println!("Connected to Yellowstone gRPC!");
+            if plain_logs_enabled {
+                println!("Connected to Yellowstone gRPC!");
+            }
             let request = subscriptions::create_subscription_request();
 
             let (mut subscribe_tx, mut stream) = match client.subscribe().await {
@@ -288,31 +353,59 @@ impl YellowstoneWorker {
                 continue;
             }
 
-            println!("Subscribed to updates! Waiting for data...");
+            if plain_logs_enabled {
+                println!("Subscribed to updates! Waiting for data...");
+            }
 
             loop {
-                match stream.next().await {
-                    Some(Ok(update)) => {
-                        self.log_update(
-                            &parser,
-                            update,
-                            &mut parse_stats,
-                            &mut runtime_metrics,
-                            metrics_every,
-                        );
+                tokio::select! {
+                    maybe_update = stream.next() => {
+                        match maybe_update {
+                            Some(Ok(update)) => {
+                                let should_exit = self.log_update(
+                                    &parser,
+                                    update,
+                                    &mut parse_stats,
+                                    &mut runtime_metrics,
+                                    metrics_every,
+                                    &mut tui,
+                                    &mut tui_history,
+                                    reconnect_ms,
+                                );
+                                if should_exit {
+                                    return;
+                                }
+                            }
+                            Some(Err(e)) => {
+                                eprintln!("Stream error: {}", e);
+                                break;
+                            }
+                            None => {
+                                if plain_logs_enabled {
+                                    println!("Stream ended");
+                                }
+                                break;
+                            }
+                        }
                     }
-                    Some(Err(e)) => {
-                        eprintln!("Stream error: {}", e);
-                        break;
-                    }
-                    None => {
-                        println!("Stream ended");
-                        break;
+                    _ = tokio::time::sleep(Duration::from_millis(120)) => {
+                        if let Some(view) = tui.as_mut() {
+                            match view.should_quit() {
+                                Ok(true) => return,
+                                Ok(false) => {}
+                                Err(err) => {
+                                    eprintln!("TUI input polling failed; disabling TUI: {}", err);
+                                    tui = None;
+                                }
+                            }
+                        }
                     }
                 }
             }
 
-            println!("Reconnecting to Yellowstone in {} ms...", reconnect_ms);
+            if plain_logs_enabled {
+                println!("Reconnecting to Yellowstone in {} ms...", reconnect_ms);
+            }
             tokio::time::sleep(Duration::from_millis(reconnect_ms)).await;
         }
     }
@@ -324,7 +417,21 @@ impl YellowstoneWorker {
         parse_stats: &mut ParseStats,
         runtime_metrics: &mut RuntimeMetrics,
         metrics_every: u64,
-    ) {
+        tui: &mut Option<IndexerTui>,
+        tui_history: &mut TuiHistory,
+        reconnect_ms: u64,
+    ) -> bool {
+        if let Some(view) = tui.as_mut() {
+            match view.should_quit() {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(err) => {
+                    eprintln!("TUI input polling failed; disabling TUI: {}", err);
+                    *tui = None;
+                }
+            }
+        }
+
         let parsed = parser.parse_update(&update);
         let program_id = parser.program_id();
         let slot = parsed.payload().get("slot").and_then(Value::as_u64);
@@ -360,19 +467,6 @@ impl YellowstoneWorker {
         }
 
         if parse_stats.total_updates % metrics_every == 0 {
-            println!(
-                "Parse summary: updates total={} dlmm_updates={} ok={} failed={} no_dlmm={} | dlmm instructions parsed={} failed={}",
-                parse_stats.total_updates,
-                parse_stats.dlmm_updates,
-                parse_stats.dlmm_updates_ok,
-                parse_stats.dlmm_updates_failed,
-                parse_stats
-                    .total_updates
-                    .saturating_sub(parse_stats.dlmm_updates),
-                parse_stats.parsed_instructions,
-                parse_stats.failed_instructions
-            );
-
             let mut unknown_list = parse_stats
                 .unknown_discriminator_counts
                 .iter()
@@ -380,7 +474,6 @@ impl YellowstoneWorker {
                 .collect::<Vec<_>>();
             unknown_list.sort_by(|a, b| b.1.cmp(&a.1));
             unknown_list.truncate(10);
-            println!("Unknown discriminators with counts: {:?}", unknown_list);
 
             let mut parsed_list = parse_stats
                 .parsed_discriminator_counts
@@ -389,7 +482,6 @@ impl YellowstoneWorker {
                 .collect::<Vec<_>>();
             parsed_list.sort_by(|a, b| b.2.cmp(&a.2));
             parsed_list.truncate(15);
-            println!("Parsed discriminators with counts: {:?}", parsed_list);
 
             let mut failed_list = parse_stats
                 .failed_parse_stats
@@ -409,7 +501,6 @@ impl YellowstoneWorker {
                 .collect::<Vec<_>>();
             failed_list.sort_by(|a, b| b.3.cmp(&a.3));
             failed_list.truncate(10);
-            println!("Failed parse reasons with sample: {:?}", failed_list);
 
             let mut warning_list = parse_stats
                 .parse_warning_stats
@@ -427,26 +518,97 @@ impl YellowstoneWorker {
                 .collect::<Vec<_>>();
             warning_list.sort_by(|a, b| b.3.cmp(&a.3));
             warning_list.truncate(10);
-            println!("Parse warnings with sample: {:?}", warning_list);
-
-            print_runtime_metrics(
+            let runtime_report = compute_runtime_metrics(
                 runtime_metrics,
                 parse_stats.total_updates,
                 parse_stats.dlmm_updates,
                 parse_stats.parsed_instructions,
                 parse_stats.failed_instructions,
             );
+            tui_history.push(&runtime_report);
+
+            if let Some(view) = tui.as_mut() {
+                let unknown_total = parse_stats
+                    .unknown_discriminator_counts
+                    .values()
+                    .copied()
+                    .sum::<u64>();
+                let failed_total = parse_stats
+                    .failed_parse_stats
+                    .values()
+                    .map(|stat| stat.count)
+                    .sum::<u64>();
+                let warning_total = parse_stats
+                    .parse_warning_stats
+                    .values()
+                    .map(|stat| stat.count)
+                    .sum::<u64>();
+                let snapshot = TuiSnapshot {
+                    connection_state: "streaming".to_string(),
+                    endpoint: self.endpoint.clone(),
+                    reconnect_ms,
+                    uptime_secs: runtime_metrics.started_at.elapsed().as_secs(),
+                    total_updates: parse_stats.total_updates,
+                    dlmm_updates: parse_stats.dlmm_updates,
+                    dlmm_updates_ok: parse_stats.dlmm_updates_ok,
+                    dlmm_updates_failed: parse_stats.dlmm_updates_failed,
+                    parsed_instructions: parse_stats.parsed_instructions,
+                    failed_instructions: parse_stats.failed_instructions,
+                    updates_per_sec: runtime_report.updates_per_sec,
+                    dlmm_updates_per_sec: runtime_report.dlmm_updates_per_sec,
+                    parsed_instr_per_sec: runtime_report.parsed_instr_per_sec,
+                    failed_instr_per_sec: runtime_report.failed_instr_per_sec,
+                    avg_updates_per_sec: runtime_report.avg_updates_per_sec,
+                    db_enqueued: runtime_metrics.db_enqueued,
+                    db_dropped: runtime_metrics.db_dropped,
+                    db_disconnected: runtime_metrics.db_disconnected,
+                    unknown_total,
+                    failed_total,
+                    warning_total,
+                    parsed_bars: parsed_list
+                        .iter()
+                        .map(|(_, name, count)| (name.clone(), *count))
+                        .collect::<Vec<_>>(),
+                    updates_rate_history: tui_history.updates_rate.iter().copied().collect(),
+                    dlmm_rate_history: tui_history.dlmm_rate.iter().copied().collect(),
+                    parsed_rate_history: tui_history.parsed_rate.iter().copied().collect(),
+                    failed_rate_history: tui_history.failed_rate.iter().copied().collect(),
+                    unknown_lines: unknown_list
+                        .iter()
+                        .map(|(disc, count)| format!("{}  {}", format_discriminator(disc), count))
+                        .collect::<Vec<_>>(),
+                    failed_lines: failed_list
+                        .iter()
+                        .map(|(_, name, error, count, _, _, _, _)| {
+                            format!("{} :: {}  {}", name, error, count)
+                        })
+                        .collect::<Vec<_>>(),
+                    warning_lines: warning_list
+                        .iter()
+                        .map(|(_, name, warning, count, _, _)| {
+                            format!("{} :: {}  {}", name, warning, count)
+                        })
+                        .collect::<Vec<_>>(),
+                };
+
+                if let Err(err) = view.draw(&snapshot) {
+                    eprintln!("TUI render failed; disabling TUI: {}", err);
+                    *tui = None;
+                }
+            }
         }
+
+        false
     }
 }
 
-fn print_runtime_metrics(
+fn compute_runtime_metrics(
     runtime_metrics: &mut RuntimeMetrics,
     total_updates: u64,
     dlmm_updates: u64,
     parsed_instructions: u64,
     failed_instructions: u64,
-) {
+) -> RuntimeReport {
     let interval_secs = runtime_metrics
         .last_report_at
         .elapsed()
@@ -467,23 +629,19 @@ fn print_runtime_metrics(
     let failed_instr_per_sec = interval_failed_instr as f64 / interval_secs;
     let avg_updates_per_sec = total_updates as f64 / uptime_secs;
 
-    println!(
-        "Ingest metrics: updates/s={:.2} dlmm_updates/s={:.2} parsed_instr/s={:.2} failed_instr/s={:.4} avg_updates/s={:.2} db_enqueued={} db_dropped={} db_disconnected={}",
-        updates_per_sec,
-        dlmm_updates_per_sec,
-        parsed_instr_per_sec,
-        failed_instr_per_sec,
-        avg_updates_per_sec,
-        runtime_metrics.db_enqueued,
-        runtime_metrics.db_dropped,
-        runtime_metrics.db_disconnected,
-    );
-
     runtime_metrics.last_report_at = Instant::now();
     runtime_metrics.last_total_updates = total_updates;
     runtime_metrics.last_dlmm_updates = dlmm_updates;
     runtime_metrics.last_parsed_instructions = parsed_instructions;
     runtime_metrics.last_failed_instructions = failed_instructions;
+
+    RuntimeReport {
+        updates_per_sec,
+        dlmm_updates_per_sec,
+        parsed_instr_per_sec,
+        failed_instr_per_sec,
+        avg_updates_per_sec,
+    }
 }
 
 fn build_db_record(parsed: &ParsedUpdate, program_id: &str) -> DbRecord {
@@ -500,24 +658,48 @@ fn build_db_record(parsed: &ParsedUpdate, program_id: &str) -> DbRecord {
         })
         .unwrap_or_default();
 
+    let update_type = parsed.update_type().to_string();
+    let signature = parsed.signature().map(ToOwned::to_owned);
+    let created_at = parsed.created_at().map(ToOwned::to_owned);
+    let status = payload
+        .get("status")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let update_id = format!(
+        "{}:{}:{}:{}",
+        parsed.slot().unwrap_or(0),
+        signature.as_deref().unwrap_or(""),
+        update_type,
+        created_at.as_deref().unwrap_or("")
+    );
+    let should_persist_failed_payload = !parsed.parsed_ok()
+        || parsed.failed_instructions() > 0
+        || status.as_deref() == Some("error");
+
     DbRecord {
-        update_type: parsed.update_type().to_string(),
+        update_id,
+        update_type,
         slot: parsed.slot(),
-        signature: parsed.signature().map(ToOwned::to_owned),
-        created_at: parsed.created_at().map(ToOwned::to_owned),
+        signature,
+        created_at,
         parsed_ok: parsed.parsed_ok(),
         parsed_instructions: parsed.parsed_instructions(),
         failed_instructions: parsed.failed_instructions(),
         dlmm_instruction_count: parsed.dlmm_instruction_count(),
-        status: payload
-            .get("status")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        status_detail_json: payload
-            .get("status_detail")
-            .filter(|value| !value.is_null())
-            .and_then(|value| serde_json::to_string(value).ok()),
-        payload_json: serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string()),
+        status,
+        failed_status_detail_json: if should_persist_failed_payload {
+            payload
+                .get("status_detail")
+                .filter(|value| !value.is_null())
+                .and_then(|value| serde_json::to_string(value).ok())
+        } else {
+            None
+        },
+        failed_payload_json: if should_persist_failed_payload {
+            Some(serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string()))
+        } else {
+            None
+        },
         instructions,
     }
 }
@@ -594,6 +776,26 @@ fn extract_discriminator(instruction: &Value) -> Option<Vec<u8>> {
         .and_then(Value::as_array)
         .map(|raw| extract_u8_vec_with_limit(raw, 8))
         .filter(|bytes| bytes.len() == 8)
+}
+
+fn format_discriminator(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn push_rate_sample(series: &mut VecDeque<u64>, value: f64) {
+    const MAX_POINTS: usize = 120;
+    let sample = if value.is_finite() && value >= 0.0 {
+        value.round() as u64
+    } else {
+        0
+    };
+    if series.len() >= MAX_POINTS {
+        series.pop_front();
+    }
+    series.push_back(sample);
 }
 
 fn extract_u8_vec(items: &[Value]) -> Vec<u8> {

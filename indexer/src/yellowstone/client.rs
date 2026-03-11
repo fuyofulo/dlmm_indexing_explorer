@@ -1,7 +1,7 @@
 use tonic::transport::ClientTlsConfig;
 use yellowstone_grpc_client::{GeyserGrpcBuilderError, GeyserGrpcClient, Interceptor};
 
-pub async fn connect(
+pub(super) async fn connect(
     endpoint: &str,
     x_token: Option<String>,
 ) -> Result<GeyserGrpcClient<impl Interceptor>, GeyserGrpcBuilderError> {

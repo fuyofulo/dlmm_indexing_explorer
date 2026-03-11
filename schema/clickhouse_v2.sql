@@ -1,7 +1,8 @@
 CREATE DATABASE IF NOT EXISTS dune_project;
 
--- Bronze: parser audit/debug stream (short retention)
-CREATE TABLE IF NOT EXISTS dune_project.bronze_raw_updates (
+-- Parser metrics: compact per-update quality/freshness surface
+CREATE TABLE IF NOT EXISTS dune_project.parser_update_metrics (
+    update_id String,
     chain LowCardinality(String),
     parser_version String,
     ingested_at_ms UInt64,
@@ -14,16 +15,36 @@ CREATE TABLE IF NOT EXISTS dune_project.bronze_raw_updates (
     failed_instructions UInt32,
     dlmm_instruction_count UInt32,
     status Nullable(String),
-    status_detail_json Nullable(String),
-    payload_json String
+    has_failed_payload UInt8,
+    failed_payload_id Nullable(String)
 )
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(toDateTime(intDiv(ingested_at_ms, 1000)))
 ORDER BY (slot, update_type, ingested_at_ms)
 TTL toDateTime(intDiv(ingested_at_ms, 1000)) + INTERVAL 14 DAY;
 
--- Silver: canonical DLMM event fact table for API + CSV export
-CREATE TABLE IF NOT EXISTS dune_project.silver_dlmm_events (
+-- Failed payload samples: sparse debug storage for unsuccessful updates only
+CREATE TABLE IF NOT EXISTS dune_project.failed_payloads (
+    failed_payload_id String,
+    update_id String,
+    chain LowCardinality(String),
+    parser_version String,
+    ingested_at_ms UInt64,
+    update_type LowCardinality(String),
+    slot UInt64,
+    signature Nullable(String),
+    created_at Nullable(String),
+    status Nullable(String),
+    status_detail_json Nullable(String),
+    payload_json String
+)
+ENGINE = MergeTree
+PARTITION BY toYYYYMM(toDateTime(intDiv(ingested_at_ms, 1000)))
+ORDER BY (slot, update_type, ingested_at_ms, failed_payload_id)
+TTL toDateTime(intDiv(ingested_at_ms, 1000)) + INTERVAL 14 DAY;
+
+-- Canonical DLMM event fact table for API + CSV export
+CREATE TABLE IF NOT EXISTS dune_project.dlmm_events (
     chain LowCardinality(String),
     parser_version String,
     ingested_at_ms UInt64,
@@ -56,50 +77,3 @@ CREATE TABLE IF NOT EXISTS dune_project.silver_dlmm_events (
 ENGINE = MergeTree
 PARTITION BY toYYYYMM(toDateTime(intDiv(ingested_at_ms, 1000)))
 ORDER BY (ifNull(pool, ''), event_name, slot, signature, instruction_index, inner_index, event_id);
-
--- Gold: pool-level minute aggregates for overview/ranking APIs
-CREATE TABLE IF NOT EXISTS dune_project.gold_pool_minute (
-    minute_bucket Int64,
-    pool String,
-    swap_count UInt64,
-    volume_raw UInt64,
-    unique_users UInt64,
-    min_slot UInt64,
-    max_slot UInt64,
-    last_ingested_unix_ms UInt64
-)
-ENGINE = ReplacingMergeTree(last_ingested_unix_ms)
-PARTITION BY toYYYYMM(toDateTime(minute_bucket * 60))
-ORDER BY (pool, minute_bucket);
-
--- Gold: pool+user hourly aggregates for leaderboard and user analytics
-CREATE TABLE IF NOT EXISTS dune_project.gold_pool_user_hour (
-    hour_bucket Int64,
-    pool String,
-    user String,
-    swap_count UInt64,
-    volume_raw UInt64,
-    claim_events UInt64,
-    fee_x_raw UInt64,
-    fee_y_raw UInt64,
-    max_slot UInt64,
-    last_ingested_unix_ms UInt64
-)
-ENGINE = ReplacingMergeTree(last_ingested_unix_ms)
-PARTITION BY toYYYYMM(toDateTime(hour_bucket * 3600))
-ORDER BY (pool, user, hour_bucket);
-
--- Gold: parser and ingest quality surface
-CREATE TABLE IF NOT EXISTS dune_project.gold_quality_minute (
-    minute_bucket Int64,
-    total_updates UInt64,
-    dlmm_updates UInt64,
-    parsed_instructions UInt64,
-    failed_instructions UInt64,
-    unknown_discriminator_count UInt64,
-    last_slot UInt64,
-    last_ingested_unix_ms UInt64
-)
-ENGINE = ReplacingMergeTree(last_ingested_unix_ms)
-PARTITION BY toYYYYMM(toDateTime(minute_bucket * 60))
-ORDER BY (minute_bucket);

@@ -1,8 +1,9 @@
 mod client;
+mod live;
 mod models;
 mod schema;
 mod transform;
 mod writer;
 
-pub use models::{BatchError, DbInstructionRecord, DbRecord};
-pub use writer::BatchWriter;
+pub(crate) use models::{BatchError, DbInstructionRecord, DbRecord};
+pub(crate) use writer::BatchWriter;

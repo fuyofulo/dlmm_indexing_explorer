@@ -15,11 +15,10 @@ mod models;
 use decode::{Cursor, decode_idl_type, decode_type_def};
 use idl::{Discriminator, Idl, IdlError, IdlEvent, IdlInstruction, IdlType, IdlTypeDef};
 use instruction_utils::{
-    collect_dlmm_discriminators, extract_custom_error_code, extract_instruction_error_index,
-    idl_error_to_json, map_idl_accounts, map_raw_accounts, summarize_dlmm_instructions,
-    update_type_name,
+    extract_custom_error_code, extract_instruction_error_index, idl_error_to_json,
+    map_idl_accounts, map_raw_accounts, summarize_dlmm_instructions, update_type_name,
 };
-pub use models::ParsedUpdate;
+pub(crate) use models::ParsedUpdate;
 use models::{AccountParseResult, ParsedAccountMeta, ParsedInstruction, UpdateParseResult};
 
 // include_str! bakes the JSON into the binary at compile time (fast, no runtime file reads)
@@ -27,7 +26,7 @@ const METEORA_IDL: &str =
     include_str!("../../../idls/LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo-idl.json");
 
 #[derive(Debug)]
-pub struct Parser {
+pub(crate) struct Parser {
     program_id: String,
     instruction_map: HashMap<Discriminator, IdlInstruction>,
     instruction_name_map: HashMap<String, IdlInstruction>,
@@ -38,7 +37,7 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new() -> Result<Self, ParseError> {
+    pub(crate) fn new() -> Result<Self, ParseError> {
         let idl = Idl::from_json(METEORA_IDL)?;
         let mut instruction_map = HashMap::new();
         let mut instruction_name_map = HashMap::new();
@@ -78,11 +77,11 @@ impl Parser {
         })
     }
 
-    pub fn program_id(&self) -> &str {
+    pub(crate) fn program_id(&self) -> &str {
         &self.program_id
     }
 
-    pub fn parse_update(&self, update: &SubscribeUpdate) -> ParsedUpdate {
+    pub(crate) fn parse_update(&self, update: &SubscribeUpdate) -> ParsedUpdate {
         let created_at = update
             .created_at
             .as_ref()
@@ -103,7 +102,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             Some(UpdateOneof::Slot(slot)) => UpdateParseResult {
                 payload: json!({
@@ -117,7 +115,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             Some(UpdateOneof::Block(block)) => UpdateParseResult {
                 payload: json!({
@@ -131,7 +128,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             Some(UpdateOneof::BlockMeta(meta)) => UpdateParseResult {
                 payload: json!({
@@ -145,7 +141,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             Some(UpdateOneof::Entry(entry)) => UpdateParseResult {
                 payload: json!({
@@ -159,7 +154,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             Some(UpdateOneof::Ping(ping)) => {
                 let _ = ping;
@@ -171,7 +165,6 @@ impl Parser {
                     parsed_instructions: 0,
                     failed_instructions: 0,
                     dlmm_instruction_count: 0,
-                    dlmm_discriminators: Vec::new(),
                 }
             }
             Some(UpdateOneof::Pong(pong)) => UpdateParseResult {
@@ -182,7 +175,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 0,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
             None => UpdateParseResult {
                 payload: json!({ "error": "missing update_oneof" }),
@@ -192,7 +184,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 1,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             },
         };
 
@@ -202,7 +193,6 @@ impl Parser {
                 .as_ref()
                 .map(update_type_name)
                 .unwrap_or("unknown"),
-            filters: update.filters.clone(),
             created_at,
             slot: result.slot,
             signature: result.signature,
@@ -210,7 +200,6 @@ impl Parser {
             parsed_instructions: result.parsed_instructions,
             failed_instructions: result.failed_instructions,
             dlmm_instruction_count: result.dlmm_instruction_count,
-            dlmm_discriminators: result.dlmm_discriminators,
             payload: result.payload,
         }
     }
@@ -228,7 +217,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 1,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             };
         };
 
@@ -285,7 +273,6 @@ impl Parser {
             parsed_instructions: 0,
             failed_instructions: if parsed_ok { 0 } else { 1 },
             dlmm_instruction_count: 0,
-            dlmm_discriminators: Vec::new(),
         }
     }
 
@@ -302,7 +289,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 1,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             };
         };
 
@@ -321,7 +307,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 1,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             };
         };
 
@@ -338,7 +323,6 @@ impl Parser {
                 parsed_instructions: 0,
                 failed_instructions: 1,
                 dlmm_instruction_count: 0,
-                dlmm_discriminators: Vec::new(),
             };
         };
 
@@ -397,7 +381,6 @@ impl Parser {
         let (parsed_instructions, failed_instructions) =
             summarize_dlmm_instructions(&self.program_id, &instructions);
         let dlmm_instruction_count = parsed_instructions + failed_instructions;
-        let dlmm_discriminators = collect_dlmm_discriminators(&self.program_id, &instructions);
         let parsed_ok = failed_instructions == 0;
 
         UpdateParseResult {
@@ -415,7 +398,6 @@ impl Parser {
             parsed_instructions,
             failed_instructions,
             dlmm_instruction_count,
-            dlmm_discriminators,
         }
     }
 
@@ -840,7 +822,7 @@ impl Parser {
 }
 
 #[derive(Debug)]
-pub struct ParseError {
+pub(crate) struct ParseError {
     message: String,
 }
 

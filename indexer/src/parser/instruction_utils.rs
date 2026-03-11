@@ -96,24 +96,6 @@ pub(super) fn summarize_dlmm_instructions(
     (parsed, failed)
 }
 
-pub(super) fn collect_dlmm_discriminators(
-    program_id: &str,
-    instructions: &[ParsedInstruction],
-) -> Vec<Vec<u8>> {
-    let mut out = Vec::new();
-    for instruction in instructions {
-        if instruction.program_id != program_id {
-            continue;
-        }
-        if let Some(disc) = instruction.discriminator.clone() {
-            out.push(disc);
-        } else if instruction.raw_data.len() >= 8 {
-            out.push(instruction.raw_data[0..8].to_vec());
-        }
-    }
-    out
-}
-
 pub(super) fn idl_error_to_json(err: &IdlError) -> Value {
     json!({
         "code": err.code,

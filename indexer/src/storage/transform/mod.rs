@@ -1,4 +1,3 @@
-mod aggregate;
 mod extract;
 mod rows;
 
@@ -7,9 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::client::ClickHouseHttpClient;
 use super::models::{BatchError, DbRecord};
-use aggregate::{BatchAggregates, is_claim_event, is_swap_instruction, minute_bucket_from_ms};
 use extract::{InstructionContext, parse_created_at_ms, parse_instruction_context};
-use rows::{BronzeRawUpdateRow, EventParts, GoldQualityMinuteRow, SilverDlmmEventRow};
+use rows::{DlmmEventRow, EventParts, FailedPayloadRow, ParserUpdateMetricRow};
 
 #[derive(Default)]
 pub(super) struct WriterState {
@@ -66,20 +64,21 @@ pub(super) fn flush_batch(
     batch: &[DbRecord],
     writer_state: &mut WriterState,
 ) -> Result<(), BatchError> {
-    let mut analytics = BatchAggregates::default();
-    let at_ms = now_unix_ms();
-    let minute_bucket = minute_bucket_from_ms(at_ms);
-
-    let mut bronze_updates = Vec::<BronzeRawUpdateRow>::with_capacity(batch.len());
-    let mut silver_events = Vec::<SilverDlmmEventRow>::new();
+    let mut parser_metrics = Vec::<ParserUpdateMetricRow>::with_capacity(batch.len());
+    let mut failed_payloads = Vec::<FailedPayloadRow>::new();
+    let mut dlmm_events = Vec::<DlmmEventRow>::new();
 
     for record in batch {
-        analytics.record_update(record);
         let record_ingested_ms = now_unix_ms();
         let created_at_ms = parse_created_at_ms(record.created_at.as_deref());
 
-        let bronze_row = BronzeRawUpdateRow::from_record(record, record_ingested_ms);
-        bronze_updates.push(bronze_row);
+        parser_metrics.push(ParserUpdateMetricRow::from_record(
+            record,
+            record_ingested_ms,
+        ));
+        if let Some(row) = FailedPayloadRow::from_record(record, record_ingested_ms) {
+            failed_payloads.push(row);
+        }
 
         for instruction in &record.instructions {
             let mut context = parse_instruction_context(instruction);
@@ -87,58 +86,20 @@ pub(super) fn flush_batch(
             fill_amount_in_mint(&mut context);
 
             let event = EventParts::from_record_instruction(record, instruction);
-            analytics.record_unknown_discriminator(instruction);
-
-            if instruction.parsed && is_swap_instruction(&event.event_name) {
-                analytics.record_swap(
-                    context.pool.as_deref(),
-                    context.user.as_deref(),
-                    context.amount_in_raw,
-                    event.slot,
-                    record_ingested_ms,
-                );
-            }
-
-            if instruction.parsed && is_claim_event(&event.event_name) {
-                analytics.record_claim(
-                    context.pool.as_deref(),
-                    context.event_owner.as_deref(),
-                    context.event_fee_x_raw,
-                    context.event_fee_y_raw,
-                    event.slot,
-                    record_ingested_ms,
-                );
-            }
-
-            let silver_row = SilverDlmmEventRow::from_parts(
+            let event_row = DlmmEventRow::from_parts(
                 record_ingested_ms,
                 created_at_ms,
                 instruction,
                 context,
                 event,
             );
-            silver_events.push(silver_row);
+            dlmm_events.push(event_row);
         }
     }
 
-    client.insert_json_rows("bronze_raw_updates", &bronze_updates)?;
-    client.insert_json_rows("silver_dlmm_events", &silver_events)?;
-
-    let quality_row = GoldQualityMinuteRow {
-        minute_bucket,
-        total_updates: analytics.total_updates,
-        dlmm_updates: analytics.dlmm_updates,
-        parsed_instructions: analytics.parsed_instructions,
-        failed_instructions: analytics.failed_instructions,
-        unknown_discriminator_count: analytics.unknown_discriminator_count,
-        last_slot: analytics.last_slot,
-        last_ingested_unix_ms: at_ms,
-    };
-
-    let (gold_pool_minute, gold_pool_user_hour) = analytics.into_gold_rows();
-    client.insert_json_rows("gold_pool_minute", &gold_pool_minute)?;
-    client.insert_json_rows("gold_pool_user_hour", &gold_pool_user_hour)?;
-    client.insert_json_rows("gold_quality_minute", &[quality_row])?;
+    client.insert_json_rows("parser_update_metrics", &parser_metrics)?;
+    client.insert_json_rows("failed_payloads", &failed_payloads)?;
+    client.insert_json_rows("dlmm_events", &dlmm_events)?;
 
     Ok(())
 }

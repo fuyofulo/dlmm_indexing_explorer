@@ -3,14 +3,18 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::broadcast;
 
 use crate::clickhouse::ClickHouseClient;
+use crate::rpc::SolanaRpcClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub clickhouse: Arc<ClickHouseClient>,
+    pub rpc: Option<Arc<SolanaRpcClient>>,
     pub metrics: Arc<AppMetrics>,
     pub started_at_ms: u64,
+    pub dashboard_tx: broadcast::Sender<u64>,
 }
 
 #[derive(Default)]
@@ -68,16 +72,6 @@ pub struct HealthResponse {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SwapsQuery {
-    pub limit: Option<usize>,
-    pub cursor: Option<String>,
-    pub pool: Option<String>,
-    pub user: Option<String>,
-    pub from_slot: Option<u64>,
-    pub to_slot: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
 pub struct TopPoolsQuery {
     pub minutes: Option<u32>,
     pub limit: Option<usize>,
@@ -109,8 +103,21 @@ pub struct QualityWindowQuery {
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PoolSummaryQuery {
+pub struct PoolExplorerQuery {
     pub minutes: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnalyticsDashboardQuery {
+    pub minutes: Option<u32>,
+    pub limit: Option<usize>,
+    pub anchor_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DashboardStreamQuery {
+    pub minutes: Option<u32>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,27 +136,10 @@ pub struct PaginatedResponse<T> {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SwapItem {
-    pub slot: u64,
-    pub signature: String,
-    pub instruction_index: u16,
-    pub inner_index: i16,
-    pub event_name: String,
-    pub pool: Option<String>,
-    pub user: Option<String>,
-    pub amount_in_raw: Option<String>,
-    pub amount_in_mint: Option<String>,
-    pub token_x_mint: Option<String>,
-    pub token_y_mint: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
 pub struct TopPoolItem {
     pub pool: String,
     pub swap_count: u64,
     pub volume_raw: String,
-    pub unique_users_sum: u64,
-    pub last_ingested_unix_ms: u64,
 }
 
 #[derive(Debug, Serialize)]

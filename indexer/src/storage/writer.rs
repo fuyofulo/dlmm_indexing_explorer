@@ -1,21 +1,29 @@
 use std::env;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, sync_channel};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::client::ClickHouseHttpClient;
+use super::live::{FlushSignal, RedisStreamPublisher};
 use super::models::{BatchError, DbRecord};
 use super::schema::init_schema;
 use super::transform::{WriterState, flush_batch};
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
 #[derive(Debug, Clone)]
-pub struct BatchWriter {
+pub(crate) struct BatchWriter {
     sender: SyncSender<DbRecord>,
     block_on_full: bool,
 }
 
 impl BatchWriter {
-    pub fn new(
+    pub(crate) fn new(
         db_path: &str,
         batch_size: usize,
         flush_ms: u64,
@@ -40,7 +48,7 @@ impl BatchWriter {
         })
     }
 
-    pub fn send(&self, record: DbRecord) -> Result<(), BatchError> {
+    pub(crate) fn send(&self, record: DbRecord) -> Result<(), BatchError> {
         match self.sender.try_send(record) {
             Ok(()) => Ok(()),
             Err(std::sync::mpsc::TrySendError::Full(record)) => {
@@ -87,9 +95,11 @@ fn writer_loop(
     let mut buffer: Vec<DbRecord> = Vec::with_capacity(batch_size);
     let mut writer_state = WriterState::default();
     let mut client: Option<ClickHouseHttpClient> = None;
+    let stream_publisher = RedisStreamPublisher::from_env()?;
     let mut next_reconnect_attempt_at = Instant::now();
     let mut last_drop_log = Instant::now();
     let mut last_backpressure_log = Instant::now();
+    let mut last_redis_log = Instant::now();
 
     loop {
         let timeout = flush_interval
@@ -153,9 +163,17 @@ fn writer_loop(
 
             if let Some(active_client) = client.as_ref() {
                 let flush_size = buffer.len().min(batch_size);
+                let flushed_at_ms = now_unix_ms();
+                let flush_signal = FlushSignal::from_records(&buffer[..flush_size], flushed_at_ms);
                 match flush_batch(active_client, &buffer[..flush_size], &mut writer_state) {
                     Ok(()) => {
                         flushed_records = flush_size;
+                        if let Err(err) = stream_publisher.publish_flush(&flush_signal)
+                            && last_redis_log.elapsed() >= drop_log_interval
+                        {
+                            eprintln!("Redis stream publish failed: {}", err);
+                            last_redis_log = Instant::now();
+                        }
                     }
                     Err(err) => {
                         client = None;
@@ -193,12 +211,16 @@ fn writer_loop(
             client = Some(new_client);
         }
         if let Some(active_client) = client.as_ref() {
+            let flushed_at_ms = now_unix_ms();
+            let flush_signal = FlushSignal::from_records(&buffer, flushed_at_ms);
             if let Err(err) = flush_batch(active_client, &buffer, &mut writer_state) {
                 eprintln!(
                     "Batch writer final flush failed; dropping {} records: {}",
                     buffer.len(),
                     err
                 );
+            } else if let Err(err) = stream_publisher.publish_flush(&flush_signal) {
+                eprintln!("Redis stream publish failed during final flush: {}", err);
             }
         } else {
             eprintln!(

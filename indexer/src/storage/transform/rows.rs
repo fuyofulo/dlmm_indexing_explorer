@@ -6,14 +6,6 @@ use super::extract::InstructionContext;
 const CHAIN_NAME: &str = "solana";
 const PARSER_VERSION: &str = "v2";
 
-pub(super) fn saturating_u128_to_u64(v: u128) -> u64 {
-    if v > u128::from(u64::MAX) {
-        u64::MAX
-    } else {
-        v as u64
-    }
-}
-
 fn bool_to_u8(value: bool) -> u8 {
     if value { 1 } else { 0 }
 }
@@ -23,7 +15,8 @@ fn u64_to_u32_saturating(value: u64) -> u32 {
 }
 
 #[derive(Serialize)]
-pub(super) struct BronzeRawUpdateRow {
+pub(super) struct ParserUpdateMetricRow {
+    update_id: String,
     chain: &'static str,
     parser_version: &'static str,
     ingested_at_ms: u64,
@@ -36,13 +29,14 @@ pub(super) struct BronzeRawUpdateRow {
     failed_instructions: u32,
     dlmm_instruction_count: u32,
     status: Option<String>,
-    status_detail_json: Option<String>,
-    payload_json: String,
+    has_failed_payload: u8,
+    failed_payload_id: Option<String>,
 }
 
-impl BronzeRawUpdateRow {
+impl ParserUpdateMetricRow {
     pub(super) fn from_record(record: &DbRecord, record_ingested_ms: u64) -> Self {
         Self {
+            update_id: record.update_id.clone(),
             chain: CHAIN_NAME,
             parser_version: PARSER_VERSION,
             ingested_at_ms: record_ingested_ms,
@@ -55,14 +49,53 @@ impl BronzeRawUpdateRow {
             failed_instructions: u64_to_u32_saturating(record.failed_instructions),
             dlmm_instruction_count: u64_to_u32_saturating(record.dlmm_instruction_count),
             status: record.status.clone(),
-            status_detail_json: record.status_detail_json.clone(),
-            payload_json: record.payload_json.clone(),
+            has_failed_payload: bool_to_u8(record.failed_payload_json.is_some()),
+            failed_payload_id: record
+                .failed_payload_json
+                .as_ref()
+                .map(|_| record.update_id.clone()),
         }
     }
 }
 
 #[derive(Serialize)]
-pub(super) struct SilverDlmmEventRow {
+pub(super) struct FailedPayloadRow {
+    failed_payload_id: String,
+    update_id: String,
+    chain: &'static str,
+    parser_version: &'static str,
+    ingested_at_ms: u64,
+    update_type: String,
+    slot: u64,
+    signature: Option<String>,
+    created_at: Option<String>,
+    status: Option<String>,
+    status_detail_json: Option<String>,
+    payload_json: String,
+}
+
+impl FailedPayloadRow {
+    pub(super) fn from_record(record: &DbRecord, record_ingested_ms: u64) -> Option<Self> {
+        let payload_json = record.failed_payload_json.clone()?;
+        Some(Self {
+            failed_payload_id: record.update_id.clone(),
+            update_id: record.update_id.clone(),
+            chain: CHAIN_NAME,
+            parser_version: PARSER_VERSION,
+            ingested_at_ms: record_ingested_ms,
+            update_type: record.update_type.clone(),
+            slot: record.slot.unwrap_or(0),
+            signature: record.signature.clone(),
+            created_at: record.created_at.clone(),
+            status: record.status.clone(),
+            status_detail_json: record.failed_status_detail_json.clone(),
+            payload_json,
+        })
+    }
+}
+
+#[derive(Serialize)]
+pub(super) struct DlmmEventRow {
     chain: &'static str,
     parser_version: &'static str,
     ingested_at_ms: u64,
@@ -93,7 +126,7 @@ pub(super) struct SilverDlmmEventRow {
     event_id: String,
 }
 
-impl SilverDlmmEventRow {
+impl DlmmEventRow {
     pub(super) fn from_parts(
         record_ingested_ms: u64,
         created_at_ms: Option<u64>,
@@ -180,42 +213,4 @@ impl EventParts {
             event_id,
         }
     }
-}
-
-#[derive(Serialize)]
-pub(super) struct GoldPoolMinuteRow {
-    pub(super) minute_bucket: i64,
-    pub(super) pool: String,
-    pub(super) swap_count: u64,
-    pub(super) volume_raw: u64,
-    pub(super) unique_users: u64,
-    pub(super) min_slot: u64,
-    pub(super) max_slot: u64,
-    pub(super) last_ingested_unix_ms: u64,
-}
-
-#[derive(Serialize)]
-pub(super) struct GoldPoolUserHourRow {
-    pub(super) hour_bucket: i64,
-    pub(super) pool: String,
-    pub(super) user: String,
-    pub(super) swap_count: u64,
-    pub(super) volume_raw: u64,
-    pub(super) claim_events: u64,
-    pub(super) fee_x_raw: u64,
-    pub(super) fee_y_raw: u64,
-    pub(super) max_slot: u64,
-    pub(super) last_ingested_unix_ms: u64,
-}
-
-#[derive(Serialize)]
-pub(super) struct GoldQualityMinuteRow {
-    pub(super) minute_bucket: i64,
-    pub(super) total_updates: u64,
-    pub(super) dlmm_updates: u64,
-    pub(super) parsed_instructions: u64,
-    pub(super) failed_instructions: u64,
-    pub(super) unknown_discriminator_count: u64,
-    pub(super) last_slot: u64,
-    pub(super) last_ingested_unix_ms: u64,
 }

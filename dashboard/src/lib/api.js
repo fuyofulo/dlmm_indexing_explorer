@@ -6,6 +6,25 @@ export function apiBase() {
   return window.location.origin;
 }
 
+export function buildWsUrl(path, params = {}) {
+  const configured = import.meta.env.VITE_WS_BASE;
+  const base =
+    typeof configured === "string" && configured.length > 0
+      ? configured
+      : import.meta.env.DEV
+        ? "http://127.0.0.1:8080"
+        : apiBase();
+  const httpUrl = new URL(path, base);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") {
+      return;
+    }
+    httpUrl.searchParams.set(key, String(value));
+  });
+  httpUrl.protocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+  return httpUrl;
+}
+
 export function buildUrl(path, params = {}) {
   const url = new URL(path, apiBase());
   Object.entries(params).forEach(([key, value]) => {
@@ -21,7 +40,7 @@ export async function apiGet(path, params = {}) {
   const url = buildUrl(path, params);
   const response = await fetch(url.toString(), {
     cache: "no-store",
-    headers: { Accept: "application/json" }
+    headers: { Accept: "application/json" },
   });
 
   const text = await response.text();
@@ -30,9 +49,5 @@ export async function apiGet(path, params = {}) {
     throw new Error(message);
   }
 
-  const parsed = JSON.parse(text);
-  if (parsed && typeof parsed === "object" && "error" in parsed && parsed.error) {
-    throw new Error(String(parsed.error));
-  }
-  return parsed;
+  return JSON.parse(text);
 }

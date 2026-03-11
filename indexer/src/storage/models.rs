@@ -1,7 +1,8 @@
 use std::fmt;
 
 #[derive(Debug)]
-pub struct DbRecord {
+pub(crate) struct DbRecord {
+    pub update_id: String,
     pub update_type: String,
     pub slot: Option<u64>,
     pub signature: Option<String>,
@@ -11,13 +12,13 @@ pub struct DbRecord {
     pub failed_instructions: u64,
     pub dlmm_instruction_count: u64,
     pub status: Option<String>,
-    pub status_detail_json: Option<String>,
-    pub payload_json: String,
+    pub failed_status_detail_json: Option<String>,
+    pub failed_payload_json: Option<String>,
     pub instructions: Vec<DbInstructionRecord>,
 }
 
 #[derive(Debug)]
-pub struct DbInstructionRecord {
+pub(crate) struct DbInstructionRecord {
     pub slot: Option<u64>,
     pub signature: Option<String>,
     pub instruction_index: u32,
@@ -34,7 +35,7 @@ pub struct DbInstructionRecord {
 }
 
 #[derive(Debug)]
-pub enum BatchError {
+pub(crate) enum BatchError {
     QueueFull,
     QueueDisconnected,
     Db(String),

@@ -1,4 +1,3 @@
 [workspace]
-members = ["indexer", "api"]
+members = ["indexer", "backend"]
 resolver = "2"
-

@@ -9,7 +9,7 @@ const PROGRAM_IDS: [&str; 1] = [
     "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
 ];
 
-pub fn create_subscription_request() -> SubscribeRequest {
+pub(super) fn create_subscription_request() -> SubscribeRequest {
     let program_ids: Vec<String> = PROGRAM_IDS.iter().map(|id| (*id).to_string()).collect();
     let mode = std::env::var("YELLOWSTONE_SUBSCRIBE_MODE")
         .unwrap_or_else(|_| "transactions".to_string())

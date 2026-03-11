@@ -7,6 +7,8 @@ edition = "2024"
 bs58 = "0.5.1"
 dotenv = "0.15.0"
 futures = "0.3.31"
+redis = { version = "1.0.3", features = ["streams"] }
+ratatui = "0.29.0"
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 tokio = { version = "1.49.0", features = ["full"] }
